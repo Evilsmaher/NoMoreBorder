@@ -6,6 +6,7 @@ import win32con
 import json, os
 import threading
 import winreg as reg
+import win32process
 from PIL import Image, ImageDraw
 from pystray import Icon, MenuItem, Menu
 from threading import Thread
@@ -45,25 +46,24 @@ def update_window_list():
         temp = []
         win32gui.EnumWindows(enum_window_proc, temp)
 
-        temp_titles = [title for hwnd, title in temp]
+        temp_titles_pids = [(hwnd, win32gui.GetWindowText(hwnd), win32process.GetWindowThreadProcessId(hwnd)[1]) for hwnd, title in temp]
         for save_item in saveList:
-            for temp_title in temp_titles:
-                if temp_title.startswith(save_item):
-                    # Use saved settings if they exist
-                    make_borderless(save_item, write_needed=False)
+            for hwnd, title, pid in temp_titles_pids:
+                if save_item == str(pid):  # Match by PID instead of name
+                    make_borderless(pid, write_needed=False)
 
-        if windowList != temp:
+        if windowList != temp_titles_pids:
             try:
                 panel.after(20, refresh_window_list)
             except:
                 exit()
 
-        windowList = temp
+        windowList = temp_titles_pids
         time.sleep(2)
 
 def refresh_window_list():
     global window_list_dropdown, windowList
-    windowList_strings = [f"{title[0:50]}" for hwnd, title in windowList]
+    windowList_strings = [f"{title[0:50]} (PID: {pid})" for hwnd, title, pid in windowList]
     window_list_dropdown.configure(values=windowList_strings)
 
 def load_settings():
@@ -121,7 +121,8 @@ def change_appearance_mode_event(new_appearance_mode: str):
 
 def combo_answer(choice):
     global selected_app
-    selected_app = choice
+    # Extract the PID from the dropdown selection
+    selected_app = choice.split("(PID: ")[-1].rstrip(")")
 
     if choice in saveList:
         custom_x_offset.set(saveList[choice]["x_offset"])
@@ -143,13 +144,13 @@ def combo_answer_display(choice):
         custom_width.set(str(monitors[selected_monitor].width))
         custom_height.set(str(monitors[selected_monitor].height))
 
-def make_borderless(app_name=None, write_needed=True):
+def make_borderless(app_pid=None, write_needed=True):
     global selected_app, windowList, saveList, custom_x_offset, custom_y_offset, custom_width, custom_height, selected_monitor
 
-    app_name = app_name or selected_app
+    app_pid = app_pid or selected_app
     hwnd = None
-    for win_hwnd, win_title in windowList:
-        if win_title.startswith(app_name):
+    for win_hwnd, win_title, pid in windowList:
+        if str(pid) == str(app_pid):  # Match by PID
             hwnd = win_hwnd
             break
 
@@ -169,44 +170,36 @@ def make_borderless(app_name=None, write_needed=True):
         location_x = monitors[selected_monitor].x + int(custom_x_offset.get())
         location_y = monitors[selected_monitor].y + int(custom_y_offset.get())
     else:
-        target_resolution = (int(saveList[app_name]["width"]), int(saveList[app_name]["height"]))
-        location_x = monitors[saveList[app_name]["monitor"]].x + int(saveList[app_name]["x_offset"])
-        location_y = monitors[saveList[app_name]["monitor"]].y + int(saveList[app_name]["y_offset"])
+        target_resolution = (int(saveList[str(app_pid)]["width"]), int(saveList[str(app_pid)]["height"]))
+        location_x = monitors[saveList[str(app_pid)]["monitor"]].x + int(saveList[str(app_pid)]["x_offset"])
+        location_y = monitors[saveList[str(app_pid)]["monitor"]].y + int(saveList[str(app_pid)]["y_offset"])
 
     win32gui.MoveWindow(hwnd, location_x, location_y, target_resolution[0], target_resolution[1], True)
     win32gui.SetWindowPos(hwnd, None, location_x, location_y, target_resolution[0], target_resolution[1], win32con.SWP_NOZORDER | win32con.SWP_FRAMECHANGED)
 
     if write_needed:
-        saveList[app_name] = {}
-        saveList[app_name]["monitor"] = selected_monitor
-        saveList[app_name]["x_offset"] = custom_x_offset.get()
-        saveList[app_name]["y_offset"] = custom_y_offset.get()
-        saveList[app_name]["width"] = custom_width.get()
-        saveList[app_name]["height"] = custom_height.get()
-        saveList[app_name]["pre_win_height"] = pre_win_height
-        saveList[app_name]["pre_win_width"] = pre_win_width
+        saveList[str(app_pid)] = {}
+        saveList[str(app_pid)]["monitor"] = selected_monitor
+        saveList[str(app_pid)]["x_offset"] = custom_x_offset.get()
+        saveList[str(app_pid)]["y_offset"] = custom_y_offset.get()
+        saveList[str(app_pid)]["width"] = custom_width.get()
+        saveList[str(app_pid)]["height"] = custom_height.get()
+        saveList[str(app_pid)]["pre_win_height"] = pre_win_height
+        saveList[str(app_pid)]["pre_win_width"] = pre_win_width
         update_apps(saveList)
-    else:
-        # saveList[app_name]["monitor"] = selected_monitor
-        # saveList[app_name]["x_offset"] = custom_x_offset.get()
-        # saveList[app_name]["y_offset"] = custom_y_offset.get()
-        # saveList[app_name]["width"] = custom_width.get()
-        # saveList[app_name]["height"] = custom_height.get()
-        # update_apps(saveList)
-        pass
 
 def restore_window():
     global selected_app, windowList, saveList
 
-    app_name = selected_app
+    app_pid = selected_app
 
-    if app_name != "0":
-        pre_win_height = saveList[app_name]["pre_win_height"]
-        pre_win_width = saveList[app_name]["pre_win_width"]
+    if app_pid != "0":
+        pre_win_height = saveList[app_pid]["pre_win_height"]
+        pre_win_width = saveList[app_pid]["pre_win_width"]
 
         hwnd = None
-        for win_hwnd, win_title in windowList:
-            if win_title.startswith(selected_app):
+        for win_hwnd, win_title, pid in windowList:
+            if str(pid) == str(app_pid):  # Match by PID
                 hwnd = win_hwnd
                 break
 
@@ -218,9 +211,10 @@ def restore_window():
 
         win32gui.SetWindowPos(hwnd, win32con.HWND_TOP, 350, 200, pre_win_width, pre_win_height, win32con.SWP_NOZORDER | win32con.SWP_FRAMECHANGED)
 
-        if selected_app in saveList:
-            saveList.pop(selected_app)
+        if app_pid in saveList:
+            saveList.pop(app_pid)
             update_apps(saveList)
+
 
 def on_quit(icon, item):
     icon.stop()
